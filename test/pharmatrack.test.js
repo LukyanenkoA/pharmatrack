@@ -132,3 +132,79 @@ test('регистрация партии: только производител
   assertAddr(b.manufacturer, manufacturer.address, 'производитель');
   assertAddr(b.custodian, manufacturer.address, 'владелец');
 });
+
+test('выпуск упаковок: ERC-721 минт, ownerOf, totalSupply, события Transfer', async () => {
+  const inst = await freshContract();
+  const { batchId, firstTokenId, lastTokenId, secrets } = await makeBatch(inst, { quantity: 10, mint: 3, label: 'M1' });
+
+  assert.deepEqual([firstTokenId, lastTokenId], [1, 3]);
+  assert.equal(Number(await inst.methods.totalSupply().call()), 3);
+  assert.deepEqual((await inst.methods.getUnitIds(batchId).call()).map(Number), [1, 2, 3]);
+
+  const u = await inst.methods.getUnit(2).call();
+  assert.equal(Number(u.batchId), batchId);
+  assert.equal(Number(u.status), UNIT_STATUS.Active);
+  assert.equal(u.codeHash, keccak(secrets[1]));
+  assert.ok(Number(u.mintedAt) > 0, 'mintedAt заполнен');
+  assert.equal(Number(u.soldAt), 0);
+
+  // ERC-721: владелец коробки — custodian партии (производитель).
+  assertAddr(await inst.methods.ownerOf(2).call(), manufacturer.address, 'ownerOf');
+
+  const transfers = await inst.getPastEvents('Transfer', { fromBlock: 0 });
+  assert.equal(transfers.length, 3);
+  assert.equal(transfers[0].returnValues.tokenId, '1');
+  assert.equal(transfers[0].returnValues.from, '0x0000000000000000000000000000000000000000');
+});
+
+test('выпуск: лимиты партии, чужой производитель, нулевой хэш, чанки', async () => {
+  const inst = await freshContract();
+  const { batchId } = await makeBatch(inst, { quantity: 4, mint: 2, label: 'M2' });
+
+  // Сверх заявленного количества.
+  await assertRevert(
+    inst.methods.mintUnits(batchId, [keccak('a'), keccak('b'), keccak('c')]).send({ from: manufacturer.address, gas: 4_000_000 }),
+    'exceeds declared quantity'
+  );
+  // Чужой производитель.
+  await assertRevert(
+    inst.methods.mintUnits(batchId, [keccak('x')]).send({ from: distributor.address, gas: 4_000_000 }),
+    'not batch manufacturer'
+  );
+  // Нулевой хэш.
+  const zeroHash = '0x' + '0'.repeat(64);
+  await assertRevert(
+    inst.methods.mintUnits(batchId, [zeroHash]).send({ from: manufacturer.address, gas: 4_000_000 }),
+    'zero code hash'
+  );
+  // Дозыпуск добирает до количества.
+  await sendTx(
+    inst.methods.mintUnits(batchId, [keccak('c'), keccak('d')]).send({ from: manufacturer.address, gas: 4_000_000 }),
+    'mint rest'
+  );
+  assert.equal(Number((await inst.methods.getBatch(batchId).call()).mintedCount), 4);
+});
+
+test('передача партии: только custodian → дистрибьютор/аптека', async () => {
+  const inst = await freshContract();
+  const { batchId } = await makeBatch(inst, { quantity: 5, mint: 2, label: 'M3' });
+
+  await assertRevert(
+    inst.methods.transferCustody(batchId, distributor.address).send({ from: pharmacy.address, gas: 300000 }),
+    'not custodian'
+  );
+  await assertRevert(
+    inst.methods.transferCustody(batchId, buyer.address).send({ from: manufacturer.address, gas: 300000 }),
+    'Distributor or Pharmacy'
+  );
+
+  await sendTx(inst.methods.transferCustody(batchId, distributor.address).send({ from: manufacturer.address, gas: 300000 }), '→ d');
+  let b = await inst.methods.getBatch(batchId).call();
+  assertAddr(b.custodian, distributor.address, 'владелец');
+  // ownerOf коробки теперь указывает на дистрибьютора.
+  assertAddr(await inst.methods.ownerOf(1).call(), distributor.address, 'ownerOf после передачи');
+
+  await sendTx(inst.methods.transferCustody(batchId, pharmacy.address).send({ from: distributor.address, gas: 300000 }), '→ p');
+  b = await inst.methods.getBatch(batchId).call();
+  assertAddr(b.custodian, pharmacy.address, 'владелец');
+});
