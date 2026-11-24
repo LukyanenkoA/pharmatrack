@@ -90,3 +90,20 @@ npm run seed -- --rpc http://localhost:8545    # терминал 3: участ�
 - Sepolia: `npm run deploy -- --rpc <sepolia-rpc> --key <ключ>`, впишите адрес
   в `docs/config.js` — QR-коды будут вести на GitHub Pages, верификация с
   телефона пройдёт через публичный RPC без кошелька.
+
+## API смарт-контракта
+
+| Функция | Доступ | Назначение |
+|---|---|---|
+| `addParticipant(addr, role)` | Админ | Выдать роль (Manufacturer / Distributor / Pharmacy / Admin) |
+| `registerBatch(name, serial, qty, expiry, instrUrl)` | Производитель | Зарегистрировать партию |
+| `mintUnits(batchId, bytes32[] codeHashes)` | Производитель партии | Выпустить коробки: по токену ERC-721 на коробку (≤ 250 за транзакцию) |
+| `transferCustody(batchId, to)` | Текущий custodian | Передать партию дистрибьютору/аптеке (блокируется после первой продажи) |
+| `markSold(tokenId)` | Аптека-custodian | Необратимая продажа коробки: `soldAt = block.timestamp` |
+| `recallBatch(batchId, reason)` | Админ или производитель | Отзыв партии в любой момент, `recalledAt` |
+| `verifyView(tokenId, secret)` view | Все | Бесплатная проверка: код, статус, `soldAt`, отзыв, срок годности |
+| `getBatch / getUnit / getBatchIds / getUnitIds` | Все | Чтение реестра |
+| `ownerOf(tokenId)`, `totalSupply()` | Все | ERC-721-профиль: владелец коробки (custodian партии), выпуск |
+
+События (журнал аудита): `BatchRegistered`, `UnitsMinted`, `Transfer` (ERC-721),
+`CustodyTransferred`, `UnitSold`, `BatchRecalled`, `ParticipantAdded/Removed`.
