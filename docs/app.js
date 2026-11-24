@@ -279,3 +279,225 @@ async function registerBatch() {
     alert('Выпуск не удался: ' + (e.message || '').slice(0, 160));
   }
 }
+
+/* ---------------- логистика и аптека ---------------- */
+
+async function transferCustody() {
+  const batchId = $('l-batch').value;
+  const to = $('l-to').value.trim();
+  if (!batchId || !Web3.utils.isAddress(to)) return alert('Выберите партию и укажите корректный адрес получателя.');
+  try {
+    await sendTx(state.contract.methods.transferCustody(batchId, to).send({ from: state.account, gas: 200000 }));
+    alert('Партия передана. Владелец обновлён в блокчейне.');
+    await refreshAll();
+  } catch (e) {
+    alert('Передача не удалась: ' + (e.message || '').slice(0, 160));
+  }
+}
+
+async function markSold() {
+  const tokenId = $('p-unit').value;
+  if (!tokenId) return alert('Нет коробок для продажи.');
+  try {
+    await sendTx(state.contract.methods.markSold(tokenId).send({ from: state.account, gas: 200000 }));
+    alert('Продажа зафиксирована навсегда: soldAt записан в блокчейн.');
+    await refreshAll();
+  } catch (e) {
+    alert('Не удалось отметить продажу: ' + (e.message || '').slice(0, 160));
+  }
+}
+
+/// Обновить список коробок выбранной партии в аптеке.
+async function refreshPharmacyUnits() {
+  const sel = $('p-unit');
+  const batchId = $('p-batch').value;
+  if (!batchId) { sel.innerHTML = '<option value="">— нет коробок —</option>'; return; }
+  const ids = await state.contract.methods.getUnitIds(batchId).call();
+  const units = await Promise.all(ids.map((id) => state.contract.methods.getUnit(id).call()));
+  const active = ids.filter((id, i) => Number(units[i].status) === 0);
+  sel.innerHTML = active.map((id) => `<option value="${id}">Коробка №${id}</option>`).join('')
+    || '<option value="">— все коробки проданы —</option>';
+}
+
+/* ---------------- админ ---------------- */
+
+async function addParticipant(remove) {
+  const addr = $('a-addr').value.trim();
+  const role = Number($('a-role').value);
+  if (!Web3.utils.isAddress(addr)) return alert('Укажите корректный адрес кошелька.');
+  try {
+    const method = remove
+      ? state.contract.methods.removeParticipant(addr)
+      : state.contract.methods.addParticipant(addr, role);
+    await sendTx(method.send({ from: state.account, gas: 200000 }));
+    alert(remove ? 'Участник исключён.' : 'Роль выдана: ' + ROLE_NAMES[role]);
+    await refreshAll();
+  } catch (e) {
+    alert('Операция не удалась: ' + (e.message || '').slice(0, 160));
+  }
+}
+
+/* ---------------- реестр партий и история ---------------- */
+
+async function refreshAll() {
+  await refreshBatches();
+  await refreshParticipantsLog();
+}
+
+async function refreshBatches() {
+  const ids = await state.contract.methods.getBatchIds().call();
+  const batches = await Promise.all(ids.map((id) => state.contract.methods.getBatch(id).call()));
+
+  const tbody = $('batches-table').querySelector('tbody');
+  tbody.innerHTML = batches.map((b) => `
+    <tr data-id="${b.id}">
+      <td>#${b.id}</td><td>${b.name}</td>
+      <td>${b.mintedCount}/${b.quantity}</td>
+      <td>${b.soldCount}</td>
+      <td>${batchStateChip(b)}</td>
+      <td class="mono">${shortAddr(b.custodian)}</td>
+    </tr>`).join('') || '<tr><td colspan="6">Партий пока нет — выпустите первую.</td></tr>';
+
+  tbody.querySelectorAll('tr[data-id]').forEach((tr) =>
+    tr.onclick = () => showBatchDetails(tr.dataset.id));
+
+  // Списки для передачи и продажи: партии, где я владелец.
+  const mine = batches.filter((b) =>
+    state.account && b.custodian.toLowerCase() === state.account.toLowerCase());
+  const transferable = mine.filter((b) => Number(b.recalledAt) === 0 && Number(b.soldCount) === 0);
+  const inPharmacy = mine.filter((b) => Number(b.recalledAt) === 0);
+
+  const lsel = $('l-batch');
+  lsel.innerHTML = transferable.map((b) => `<option value="${b.id}">#${b.id} — ${b.name}</option>`).join('')
+    || '<option value="">— нет партий —</option>';
+
+  const psel = $('p-batch');
+  psel.innerHTML = inPharmacy.map((b) => `<option value="${b.id}">#${b.id} — ${b.name} (продано ${b.soldCount}/${b.mintedCount})</option>`).join('')
+    || '<option value="">— нет партий в аптеке —</option>';
+  psel.onchange = refreshPharmacyUnits;
+  await refreshPharmacyUnits();
+
+  $('my-batches').innerHTML = mine.length
+    ? mine.map((b) => `<div class="event-item">Партия #${b.id} «${b.name}» — коробок: ${b.mintedCount}/${b.quantity}, продано: ${b.soldCount} ${Number(b.recalledAt) !== 0 ? chipBad('отозвана') : ''}</div>`).join('')
+    : '<p class="hint">Вы не владеете ни одной партией.</p>';
+}
+
+async function showBatchDetails(id) {
+  const b = await state.contract.methods.getBatch(id).call();
+  const unitIds = await state.contract.methods.getUnitIds(id).call();
+  const units = await Promise.all(unitIds.map((tid) => state.contract.methods.getUnit(tid).call()));
+  const canRecall = [1, 2].includes(state.role) && Number(b.recalledAt) === 0;
+
+  const el = $('batch-details');
+  el.classList.remove('hidden');
+  el.innerHTML = `
+    <h3>Партия #${id} — «${b.name}» ${batchStateChip(b)}</h3>
+    <dl class="kv">
+      <dt>Серийный номер</dt><dd class="mono">${b.serialNumber}</dd>
+      <dt>Коробок выпущено</dt><dd>${b.mintedCount} из ${b.quantity}</dd>
+      <dt>Продано</dt><dd>${b.soldCount}</dd>
+      <dt>Производитель</dt><dd class="mono">${b.manufacturer}</dd>
+      <dt>Владелец</dt><dd class="mono">${b.custodian}</dd>
+      <dt>Срок годности</dt><dd>${fmtDate(b.expiry)}</dd>
+      <dt>Зарегистрирована</dt><dd>${fmtDateTime(b.createdAt)}</dd>
+      ${Number(b.recalledAt) !== 0 ? `<dt>Отзыв</dt><dd>${chipBad(fmtDateTime(b.recalledAt) + ' — ' + b.recallReason)}</dd>` : ''}
+    </dl>
+    ${canRecall ? '<div class="btn-row"><button id="btn-recall" class="primary">Отозвать партию</button></div>' : ''}
+    <h3 style="margin-top:14px">Коробки</h3>
+    <table><thead><tr><th>tokenId</th><th>Статус</th><th>Выпущена</th><th>Продана</th></tr></thead>
+    <tbody>${unitIds.map((tid, i) => `
+      <tr><td>#${tid}</td>
+      <td>${Number(units[i].status) === 1 ? chipBad('Продана') : chipOk('В обороте')}</td>
+      <td>${fmtDateTime(units[i].mintedAt)}</td>
+      <td>${Number(units[i].soldAt) > 0 ? fmtDateTime(units[i].soldAt) : '—'}</td></tr>`).join('')}
+    </tbody></table>
+    <h3 style="margin-top:14px">История партии</h3><div id="details-history"></div>`;
+
+  const recallBtn = $('btn-recall');
+  if (recallBtn) recallBtn.onclick = async () => {
+    const reason = prompt('Причина отзыва:', 'Брак партии');
+    if (!reason) return;
+    try {
+      await sendTx(state.contract.methods.recallBatch(id, reason).send({ from: state.account, gas: 200000 }));
+      alert('Партия отозвана.');
+      await refreshAll();
+      showBatchDetails(id);
+    } catch (e) { alert('Не удалось отозвать: ' + (e.message || '').slice(0, 140)); }
+  };
+  await showHistory(id, null, null, 'details-history');
+}
+
+async function showHistory(batchId, tokenId, wrapperId, listId) {
+  if (wrapperId) $(wrapperId).classList.remove('hidden');
+  const list = $(listId);
+  list.innerHTML = '<p class="hint">Загрузка истории…</p>';
+  try {
+    let events;
+    try {
+      events = await state.contract.getPastEvents('allEvents', { fromBlock: 0, filter: { batchId } });
+    } catch {
+      // Публичные RPC иногда ограничивают диапазон блоков — пробуем последние ~90 дней.
+      const from = Math.max(0, (await state.web3.eth.getBlockNumber()) - 2_000_000);
+      events = await state.contract.getPastEvents('allEvents', { fromBlock: from, filter: { batchId } });
+    }
+    // UnitSold/Transfer индексируют tokenId, а не batchId — дочитываем отдельно.
+    if (tokenId) {
+      const byToken = await state.contract.getPastEvents('allEvents', { fromBlock: 0, filter: { tokenId } });
+      events = events.concat(byToken.filter((e) => !('batchId' in e.returnValues)));
+    }
+    events.sort((a, b) => a.blockNumber - b.blockNumber);
+    list.innerHTML = events.map((e) => {
+      const r = e.returnValues;
+      switch (e.event) {
+        case 'BatchRegistered':
+          return `<div class="event-item"><b>🏭 Регистрация партии</b> — «${r.name}», заявлено ${r.quantity} коробок, срок до ${fmtDate(r.expiry)} <span class="when">блок ${e.blockNumber}</span></div>`;
+        case 'UnitsMinted':
+          return `<div class="event-item"><b>📦 Выпуск коробок</b> — tokenId ${r.firstTokenId}–${r.lastTokenId}, по токену ERC-721 на коробку <span class="when">блок ${e.blockNumber}</span></div>`;
+        case 'Transfer':
+          return `<div class="event-item"><b>🪙 ERC-721 Transfer</b> — минт коробки tokenId ${r.tokenId} <span class="when">блок ${e.blockNumber}</span></div>`;
+        case 'CustodyTransferred':
+          return `<div class="event-item"><b>🚚 Передача партии</b> — ${shortAddr(r.from)} → ${shortAddr(r.to)} <span class="when">блок ${e.blockNumber}</span></div>`;
+        case 'UnitSold':
+          return `<div class="event-item"><b>💰 Продажа коробки</b> — tokenId ${r.tokenId}, продана ${fmtDateTime(r.soldAt)} аптекой ${shortAddr(r.pharmacy)} <span class="when">блок ${e.blockNumber}</span></div>`;
+        case 'BatchRecalled':
+          return `<div class="event-item"><b>⛔ Отзыв партии</b> — ${r.reason} (${fmtDateTime(r.recalledAt)}) <span class="when">блок ${e.blockNumber}</span></div>`;
+        default:
+          return `<div class="event-item"><b>${e.event}</b> <span class="when">блок ${e.blockNumber}</span></div>`;
+      }
+    }).join('') || '<p class="hint">Событий пока нет.</p>';
+  } catch (e) {
+    list.innerHTML = '<p class="hint error">История недоступна: ' + (e.message || '').slice(0, 120) + '</p>';
+  }
+}
+
+async function refreshParticipantsLog() {
+  const list = $('participants-log');
+  try {
+    const added = await state.contract.getPastEvents('ParticipantAdded', { fromBlock: 0 });
+    const removed = await state.contract.getPastEvents('ParticipantRemoved', { fromBlock: 0 });
+    const active = new Map(added.map((e) => [e.returnValues.participant.toLowerCase(), e.returnValues.role]));
+    for (const e of removed) active.delete(e.returnValues.participant.toLowerCase());
+    list.innerHTML = [...active.entries()].map(([addr, role]) =>
+      `<div class="event-item"><span class="mono">${addr}</span> — ${ROLE_NAMES[role]}</div>`).join('')
+      || '<p class="hint">Участников нет.</p>';
+  } catch {
+    list.innerHTML = '<p class="hint">Журнал участников недоступен на этом RPC.</p>';
+  }
+}
+
+/* ---------------- инициализация ---------------- */
+
+window.addEventListener('DOMContentLoaded', () => {
+  readSettings();
+  state.web3 = new Web3(); // заготовка, провайдер подставится при подключении
+  $('btn-connect-rpc').onclick = () => connect({ useMetaMask: false });
+  $('btn-connect-mm').onclick = () => connect({ useMetaMask: true });
+  $('btn-verify').onclick = verify;
+  $('btn-register').onclick = registerBatch;
+  $('btn-transfer').onclick = transferCustody;
+  $('btn-sold').onclick = markSold;
+  $('btn-add-participant').onclick = () => addParticipant(false);
+  $('btn-remove-participant').onclick = () => addParticipant(true);
+  $('acct-select').onchange = (e) => switchAccount(e.target.value);
+  document.querySelectorAll('.tabs button').forEach((b) => b.onclick = () => switchTab(b.dataset.tab));
+});
