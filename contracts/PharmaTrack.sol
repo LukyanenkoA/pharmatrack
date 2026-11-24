@@ -140,10 +140,31 @@ contract PharmaTrack {
         _;
     }
 
+    // ---------- Управление участниками ----------
 
     constructor() {
         admin = msg.sender;
         participants[msg.sender] = Role.Admin;
         emit ParticipantAdded(msg.sender, Role.Admin);
+    }
+
+    /**
+     * @notice Выдать адресу роль участника цепочки поставок. Только админ.
+     */
+    function addParticipant(address participant, Role role) external onlyAdmin {
+        require(participant != address(0), "PharmaTrack: zero address");
+        require(role != Role.None, "PharmaTrack: role cannot be None");
+        require(participants[participant] == Role.None, "PharmaTrack: already a participant");
+        participants[participant] = role;
+        emit ParticipantAdded(participant, role);
+    }
+
+    /**
+     * @notice Лишить адрес роли участника. Только админ.
+     */
+    function removeParticipant(address participant) external onlyAdmin {
+        require(participants[participant] != Role.None, "PharmaTrack: not a participant");
+        participants[participant] = Role.None;
+        emit ParticipantRemoved(participant);
     }
 }
