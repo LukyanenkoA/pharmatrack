@@ -325,4 +325,89 @@ contract PharmaTrack {
 
         emit BatchRecalled(batchId, reason, batch.recalledAt);
     }
+
+    // ---------- Верификация покупателем (бесплатно, без записи) ----------
+
+    /**
+     * @notice Проверить QR-код упаковки, не меняя состояние (view, без газа).
+     *         Покупателю не нужны кошелёк и ETH.
+     * @param tokenId идентификатор коробки из QR-кода
+     * @param secret  секрет из QR-кода
+     * @return codeValid совпал ли секрет (false — код поддельный)
+     * @return status     статус упаковки (0 Active, 1 Sold)
+     * @return batchId    партия
+     * @return custodian  текущий владелец партии
+     * @return mintedAt   время выпуска коробки
+     * @return soldAt     время продажи (0 — не продана)
+     * @return recalled   отозвана ли партия
+     * @return recalledAt время отзыва
+     * @return expiry     срок годности партии
+     */
+    function verifyView(uint256 tokenId, string calldata secret)
+        external
+        view
+        unitExists(tokenId)
+        returns (
+            bool codeValid,
+            UnitStatus status,
+            uint256 batchId,
+            address custodian,
+            uint64 mintedAt,
+            uint64 soldAt,
+            bool recalled,
+            uint64 recalledAt,
+            uint64 expiry
+        )
+    {
+        Unit storage unit = units[tokenId];
+        Batch storage batch = batches[unit.batchId];
+        return (
+            _hash(secret) == unit.codeHash,
+            unit.status,
+            unit.batchId,
+            batch.custodian,
+            unit.mintedAt,
+            unit.soldAt,
+            batch.recalledAt != 0,
+            batch.recalledAt,
+            batch.expiry
+        );
+    }
+
+    // ---------- Вспомогательные чтения ----------
+
+    /// @notice Все идентификаторы партий.
+    function getBatchIds() external view returns (uint256[] memory) {
+        return _batchIds;
+    }
+
+    /// @notice Полная информация о партии.
+    function getBatch(uint256 batchId) external view batchExists(batchId) returns (Batch memory) {
+        return batches[batchId];
+    }
+
+    /// @notice Полная информация об упаковке.
+    function getUnit(uint256 tokenId) external view unitExists(tokenId) returns (Unit memory) {
+        return units[tokenId];
+    }
+
+    /// @notice Идентификаторы всех упаковок партии.
+    function getUnitIds(uint256 batchId) external view batchExists(batchId) returns (uint256[] memory) {
+        return _unitIds[batchId];
+    }
+
+    /// @notice ERC-721: владелец упаковки — текущий custodian её партии.
+    function ownerOf(uint256 tokenId) external view unitExists(tokenId) returns (address) {
+        return batches[units[tokenId].batchId].custodian;
+    }
+
+    /// @notice ERC-721: сколько упаковок выпущено всего.
+    function totalSupply() external view returns (uint256) {
+        return nextUnitId - 1;
+    }
+
+    /// @notice keccak256 секретной строки QR-кода.
+    function _hash(string memory secret) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(secret));
+    }
 }
