@@ -1,0 +1,21 @@
+{
+  "name": "pharmatrack",
+  "version": "1.0.0",
+  "description": "Учебный проект: отслеживание жизненного цикла лекарств на Ethereum (борьба с подделками, QR-верификация)",
+  "license": "MIT",
+  "scripts": {
+    "compile": "node scripts/compile.js",
+    "deploy": "node scripts/deploy.js",
+    "seed": "node scripts/seed.js",
+    "demo": "node scripts/demo.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "solc": "^0.8.39",
+    "web3": "^1.10.0"
+  },
+  "devDependencies": {
+    "ganache": "^7.9.0",
+    "qrcode": "^1.5.0"
+  }
+}
