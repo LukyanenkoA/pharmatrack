@@ -208,3 +208,154 @@ test('передача партии: только custodian → дистрибь
   b = await inst.methods.getBatch(batchId).call();
   assertAddr(b.custodian, pharmacy.address, 'владелец');
 });
+
+test('продажа коробки: только аптека-владелец, необратима, блокирует партию', async () => {
+  const inst = await freshContract();
+  const { batchId, firstTokenId } = await makeBatch(inst, { quantity: 5, mint: 2, label: 'M4' });
+  const tokenId = firstTokenId; // коробка №1
+
+  await sendTx(inst.methods.transferCustody(batchId, pharmacy.address).send({ from: manufacturer.address, gas: 300000 }), '→ p');
+
+  await assertRevert(
+    inst.methods.markSold(tokenId).send({ from: distributor.address, gas: 300000 }),
+    'not a pharmacy'
+  );
+  await sendTx(inst.methods.markSold(tokenId).send({ from: pharmacy.address, gas: 300000 }), 'sold');
+
+  const u = await inst.methods.getUnit(tokenId).call();
+  assert.equal(Number(u.status), UNIT_STATUS.Sold);
+  assert.ok(Number(u.soldAt) > 0, 'soldAt заполнен');
+  assert.equal(Number((await inst.methods.getBatch(batchId).call()).soldCount), 1);
+
+  // Повторная продажа той же коробки отклоняется.
+  await assertRevert(
+    inst.methods.markSold(tokenId).send({ from: pharmacy.address, gas: 300000 }),
+    'unit already sold'
+  );
+  // После первой продажи партию передавать нельзя.
+  await assertRevert(
+    inst.methods.transferCustody(batchId, distributor.address).send({ from: pharmacy.address, gas: 300000 }),
+    'batch has sold units'
+  );
+});
+
+test('продажа просроченной и отозванной партии запрещена', async () => {
+  const inst = await freshContract();
+  // Просроченная партия.
+  const rcpt = await sendTx(
+    inst.methods.registerBatch('X', 'EXP-1', 2, Math.floor(Date.now() / 1000) + 5, '').send({ from: manufacturer.address, gas: 600000 }),
+    'register'
+  );
+  const expiredId = rcpt.events.BatchRegistered.returnValues.batchId;
+  await sendTx(inst.methods.mintUnits(expiredId, [keccak('e1')]).send({ from: manufacturer.address, gas: 4_000_000 }), 'mint');
+  await sendTx(inst.methods.transferCustody(expiredId, pharmacy.address).send({ from: manufacturer.address, gas: 300000 }), '→ p');
+
+  // Отзыванная партия.
+  const { batchId, firstTokenId } = await makeBatch(inst, { quantity: 2, mint: 1, label: 'M5' });
+  await sendTx(inst.methods.transferCustody(batchId, pharmacy.address).send({ from: manufacturer.address, gas: 300000 }), '→ p');
+  await sendTx(inst.methods.recallBatch(batchId, 'брак').send({ from: manufacturer.address, gas: 300000 }), 'recall');
+  await assertRevert(
+    inst.methods.markSold(firstTokenId).send({ from: pharmacy.address, gas: 300000 }),
+    'batch recalled'
+  );
+});
+
+test('отзыв: в любой момент (в т.ч. после продаж), recalledAt фиксируется', async () => {
+  const inst = await freshContract();
+  const { batchId, firstTokenId } = await makeBatch(inst, { quantity: 3, mint: 2, label: 'M6' });
+  await sendTx(inst.methods.transferCustody(batchId, pharmacy.address).send({ from: manufacturer.address, gas: 300000 }), '→ p');
+  await sendTx(inst.methods.markSold(firstTokenId).send({ from: pharmacy.address, gas: 300000 }), 'sold');
+
+  await assertRevert(
+    inst.methods.recallBatch(batchId, 'x').send({ from: pharmacy.address, gas: 300000 }),
+    'cannot recall'
+  );
+  await sendTx(inst.methods.recallBatch(batchId, 'брак партии').send({ from: admin.address, gas: 300000 }), 'recall');
+  const b = await inst.methods.getBatch(batchId).call();
+  assert.ok(Number(b.recalledAt) > 0, 'recalledAt заполнен');
+  assert.equal(b.recallReason, 'брак партии');
+  await assertRevert(
+    inst.methods.recallBatch(batchId, 'x').send({ from: admin.address, gas: 300000 }),
+    'already recalled'
+  );
+});
+
+test('верификация: бесплатная view-проверка без изменения состояния', async () => {
+  const inst = await freshContract();
+  const { batchId, firstTokenId, secrets } = await makeBatch(inst, { quantity: 4, mint: 2, label: 'M7' });
+
+  const v = await inst.methods.verifyView(firstTokenId, secrets[0]).call({ from: buyer.address });
+  assert.equal(v.codeValid, true);
+  assert.equal(Number(v.status), UNIT_STATUS.Active);
+  assert.equal(Number(v.batchId), batchId);
+  assertAddr(v.custodian, manufacturer.address, 'custodian');
+  assert.ok(Number(v.mintedAt) > 0);
+  assert.equal(Number(v.soldAt), 0);
+  assert.equal(v.recalled, false);
+
+  const fake = await inst.methods.verifyView(firstTokenId, 'PHARMA-WRONG').call({ from: buyer.address });
+  assert.equal(fake.codeValid, false);
+
+  // Несуществующая коробка — revert.
+  await assertRevert(inst.methods.verifyView(999, 'x').call(), 'unit does not exist');
+});
+
+test('детектор подделки: проданная коробка сообщает soldAt в verifyView', async () => {
+  const inst = await freshContract();
+  const { batchId, firstTokenId, secrets } = await makeBatch(inst, { quantity: 4, mint: 2, label: 'M8' });
+  await sendTx(inst.methods.transferCustody(batchId, pharmacy.address).send({ from: manufacturer.address, gas: 300000 }), '→ p');
+  await sendTx(inst.methods.markSold(firstTokenId).send({ from: pharmacy.address, gas: 300000 }), 'sold');
+
+  const v = await inst.methods.verifyView(firstTokenId, secrets[0]).call({ from: buyer.address });
+  assert.equal(v.codeValid, true);
+  assert.equal(Number(v.status), UNIT_STATUS.Sold);
+  assert.ok(Number(v.soldAt) > 0, 'покупатель видит дату продажи');
+
+  // Вторая коробка партии ещё Active.
+  const v2 = await inst.methods.verifyView(firstTokenId + 1, secrets[1]).call({ from: buyer.address });
+  assert.equal(Number(v2.status), UNIT_STATUS.Active);
+});
+
+test('отозванная коробка: флаг recalled и recalledAt видны покупателю', async () => {
+  const inst = await freshContract();
+  const { batchId, firstTokenId, secrets } = await makeBatch(inst, { quantity: 3, mint: 2, label: 'M9' });
+  await sendTx(inst.methods.recallBatch(batchId, 'фальсификация').send({ from: manufacturer.address, gas: 300000 }), 'recall');
+
+  const v = await inst.methods.verifyView(firstTokenId, secrets[0]).call({ from: buyer.address });
+  assert.equal(v.codeValid, true);
+  assert.equal(v.recalled, true);
+  assert.ok(Number(v.recalledAt) > 0);
+});
+
+test('аудит: события образуют журнал жизни коробки', async () => {
+  const inst = await freshContract();
+  const { batchId, firstTokenId, secrets } = await makeBatch(inst, { quantity: 4, mint: 2, label: 'M10' });
+  await sendTx(inst.methods.transferCustody(batchId, distributor.address).send({ from: manufacturer.address, gas: 300000 }), '→ d');
+  await sendTx(inst.methods.transferCustody(batchId, pharmacy.address).send({ from: distributor.address, gas: 300000 }), '→ p');
+  await sendTx(inst.methods.markSold(firstTokenId).send({ from: pharmacy.address, gas: 300000 }), 'sold');
+
+  const events = await inst.getPastEvents('allEvents', { fromBlock: 0 });
+  const names = events.map((e) => e.event).filter((n) => !n.startsWith('Participant'));
+  assert.deepEqual(names, [
+    'BatchRegistered',
+    'Transfer', 'Transfer',            // минт коробок 1 и 2
+    'UnitsMinted',                     // сводное событие выпуска
+    'CustodyTransferred',
+    'CustodyTransferred',
+    'UnitSold',
+  ]);
+  const sold = events.find((e) => e.event === 'UnitSold');
+  assert.equal(sold.returnValues.tokenId, String(firstTokenId));
+  assert.ok(Number(sold.returnValues.soldAt) > 0);
+});
+
+test(' несколько партий: независимые диапазоны tokenId и перечисление', async () => {
+  const inst = await freshContract();
+  const a = await makeBatch(inst, { quantity: 3, mint: 2, label: 'A' });
+  const b = await makeBatch(inst, { quantity: 3, mint: 1, label: 'B' });
+  assert.deepEqual([a.firstTokenId, a.lastTokenId], [1, 2]);
+  assert.deepEqual([b.firstTokenId, b.lastTokenId], [3, 3]);
+  assert.deepEqual((await inst.methods.getBatchIds().call()).map(Number), [1, 2]);
+  assert.deepEqual((await inst.methods.getUnitIds(b.batchId).call()).map(Number), [3]);
+  assert.equal(Number(await inst.methods.totalSupply().call()), 3);
+});
