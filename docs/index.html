@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PharmaTrack — проверка подлинности лекарств</title>
+  <link rel="stylesheet" href="style.css?v=2" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="pill">⛓ Ethereum · ERC-721</span>
+      <h1>PharmaTrack</h1>
+      <p>Сериализация упаковок лекарств и защита от подделок</p>
+    </div>
+    <div id="status-bar" class="status-bar offline">
+      <span id="net-name">не подключено</span>
+      <span id="acct" class="mono"></span>
+      <span id="role-badge" class="badge hidden"></span>
+      <select id="acct-select" class="hidden" title="Активный аккаунт (роль в системе)"></select>
+    </div>
+  </header>
+
+  <!-- Панель подключения -->
+  <section id="connect-panel" class="card">
+    <h2>Подключение к сети</h2>
+    <div class="grid connect-grid">
+      <label>RPC-узел
+        <input id="rpc-url" class="mono" placeholder="http://localhost:8545" />
+      </label>
+      <label>Адрес контракта
+        <input id="contract-addr" class="mono" placeholder="0x…" />
+      </label>
+      <div class="btn-row">
+        <button id="btn-connect-rpc" class="primary">Подключиться по RPC</button>
+        <button id="btn-connect-mm">MetaMask</button>
+      </div>
+    </div>
+    <p class="hint" id="connect-hint">
+      Локальное демо: <span class="mono">npx ganache</span> → RPC <span class="mono">http://localhost:8545</span>.
+      Проверка покупателем бесплатна: кошелёк и ETH не нужны.
+    </p>
+    <p class="error hidden" id="connect-error"></p>
+  </section>
+
+  <!-- Рабочая область -->
+  <main id="app" class="hidden">
+    <nav class="tabs" id="tabs">
+      <button data-tab="verify" class="active">✓ Проверка (покупатель)</button>
+      <button data-tab="manufacturer">🏭 Производитель</button>
+      <button data-tab="logistics">🚚 Логистика</button>
+      <button data-tab="pharmacy">🏥 Аптека</button>
+      <button data-tab="admin">🔑 Админ</button>
+      <button data-tab="batches">📋 Партии и коробки</button>
+    </nav>
+
+    <!-- Проверка покупателем -->
+    <section id="tab-verify" class="tab-panel active">
+      <div class="card">
+        <h2>Проверка упаковки по QR-коду</h2>
+        <p class="hint">Отсканируйте QR на коробке — откроется эта страница с заполненными полями.
+           Проверка бесплатна: данные читаются из блокчейна, ничего не подписывается.</p>
+        <div class="grid two">
+          <label>Номер упаковки (tokenId)
+            <input id="v-token" type="number" min="1" placeholder="1" />
+          </label>
+          <label>Код из QR (секрет коробки)
+            <input id="v-secret" class="mono" placeholder="PHARMA-…" />
+          </label>
+        </div>
+        <button id="btn-verify" class="primary">Проверить</button>
+      </div>
+
+      <div id="verdict" class="card verdict hidden"></div>
+      <div id="verify-details" class="card hidden"></div>
+      <div id="verify-history" class="card hidden"><h3>История партии (журнал аудита)</h3><div id="verify-history-list"></div></div>
+    </section>
+
+    <!-- Производитель -->
+    <section id="tab-manufacturer" class="tab-panel">
+      <div class="card">
+        <h2>Выпуск партии и коробок</h2>
+        <p class="hint">Каждой коробке выпускается свой токен (ERC-721) со своим QR-секретом.
+           В блокчейн уходит только keccak256-хэш секрета. Для больших партий выпускайте коробки
+           партиями по ≤ 250 шт. (лимит газа блока).</p>
+        <div class="grid two">
+          <label>Название препарата <input id="m-name" placeholder="Парацетамол 500 мг" /></label>
+          <label>Серийный номер партии <input id="m-serial" placeholder="PCT-2026-0001" /></label>
+          <label>Количество коробок к выпуску <input id="m-qty" type="number" min="1" max="250" value="10" /></label>
+          <label>Срок годности <input id="m-expiry" type="date" /></label>
+          <label>Ссылка на инструкцию (необязательно) <input id="m-instr" class="mono" placeholder="https://…" /></label>
+        </div>
+        <button id="btn-register" class="primary">Зарегистрировать партию и выпустить коробки</button>
+      </div>
+      <div id="qr-result" class="card hidden">
+        <h2>QR-коды коробок партии №<span id="qr-batch-id"></span></h2>
+        <p class="hint">Распечатайте QR и наклейте по одному на каждую коробку.
+           Покупатель сканирует QR телефоном и попадает на вкладку «Проверка».</p>
+        <div class="btn-row" style="margin-bottom:10px">
+          <button id="btn-secrets-download">Скачать список секретов (.txt)</button>
+        </div>
+        <div id="qr-grid" class="qr-grid"></div>
+      </div>
+    </section>
+
+    <!-- Логистика -->
+    <section id="tab-logistics" class="tab-panel">
+      <div class="card">
+        <h2>Передача партии по цепочке</h2>
+        <p class="hint">Партия передаётся целиком. После первой продажи коробки партии
+           передача блокируется — это защищает путь упаковки от подмены.</p>
+        <div class="grid two">
+          <label>Партия
+            <select id="l-batch"></select>
+          </label>
+          <label>Адрес получателя <input id="l-to" class="mono" placeholder="0x…" /></label>
+        </div>
+        <button id="btn-transfer" class="primary">Передать партию</button>
+      </div>
+      <div class="card"><h3>Мои партии (я — владелец)</h3><div id="my-batches"></div></div>
+    </section>
+
+    <!-- Аптека -->
+    <section id="tab-pharmacy" class="tab-panel">
+      <div class="card">
+        <h2>Продажа коробки покупателю</h2>
+        <p class="hint">Продажа необратима: контракт навсегда запоминает дату (soldAt).
+           После этого любая «новая» коробка с этим кодом определяется как подделка.</p>
+        <div class="grid two">
+          <label>Партия в аптеке
+            <select id="p-batch"></select>
+          </label>
+          <label>Коробка (tokenId)
+            <select id="p-unit"></select>
+          </label>
+        </div>
+        <button id="btn-sold" class="primary">Коробка продана</button>
+      </div>
+    </section>
+
+    <!-- Админ -->
+    <section id="tab-admin" class="tab-panel">
+      <div class="card">
+        <h2>Управление участниками</h2>
+        <div class="grid three">
+          <label>Адрес кошелька <input id="a-addr" class="mono" placeholder="0x…" /></label>
+          <label>Роль
+            <select id="a-role">
+              <option value="2">Производитель</option>
+              <option value="3">Дистрибьютор</option>
+              <option value="4">Аптека</option>
+              <option value="1">Админ</option>
+            </select>
+          </label>
+        </div>
+        <div class="btn-row">
+          <button id="btn-add-participant" class="primary">Выдать роль</button>
+          <button id="btn-remove-participant">Исключить участника</button>
+        </div>
+      </div>
+      <div class="card"><h3>Журнал участников</h3><div id="participants-log"></div></div>
+    </section>
+
+    <!-- Партии -->
+    <section id="tab-batches" class="tab-panel">
+      <div class="card">
+        <h2>Реестр партий</h2>
+        <table id="batches-table">
+          <thead>
+            <tr><th>№</th><th>Препарат</th><th>Коробки</th><th>Продано</th><th>Состояние</th><th>Владелец</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="batch-details" class="card hidden"></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Учебный проект по курсу «Блокчейн» · Ethereum · Solidity · ERC-721 · web3.js ·
+       <span id="contract-foot" class="mono"></span></p>
+  </footer>
+
+  <script src="vendor/web3.min.js"></script>
+  <script src="vendor/qrcode.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js?v=2"></script>
+</body>
+</html>
