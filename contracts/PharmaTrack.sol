@@ -167,4 +167,92 @@ contract PharmaTrack {
         participants[participant] = Role.None;
         emit ParticipantRemoved(participant);
     }
+
+    // ---------- Выпуск партии и упаковок ----------
+
+    /**
+     * @notice Зарегистрировать партию (без выпуска упаковок). Только
+     *         производитель. Упаковки выпускаются отдельно вызовом mintUnits.
+     * @param name            название препарата
+     * @param serialNumber    серийный номер партии
+     * @param quantity        заявленное количество упаковок в партии
+     * @param expiry          срок годности (unix timestamp)
+     * @param instructionsUrl ссылка на инструкцию (может быть пустой)
+     * @return batchId идентификатор партии
+     */
+    function registerBatch(
+        string calldata name,
+        string calldata serialNumber,
+        uint256 quantity,
+        uint64 expiry,
+        string calldata instructionsUrl
+    ) external onlyRole(Role.Manufacturer) returns (uint256 batchId) {
+        require(bytes(name).length > 0, "PharmaTrack: name is empty");
+        require(bytes(serialNumber).length > 0, "PharmaTrack: serial is empty");
+        require(quantity > 0, "PharmaTrack: quantity is zero");
+        require(expiry > block.timestamp, "PharmaTrack: already expired");
+
+        batchId = nextBatchId++;
+        batches[batchId] = Batch({
+            id: batchId,
+            name: name,
+            serialNumber: serialNumber,
+            quantity: quantity,
+            mintedCount: 0,
+            soldCount: 0,
+            expiry: expiry,
+            manufacturer: msg.sender,
+            custodian: msg.sender,
+            createdAt: uint64(block.timestamp),
+            recalledAt: 0,
+            recallReason: "",
+            instructionsUrl: instructionsUrl
+        });
+        _batchIds.push(batchId);
+
+        emit BatchRegistered(batchId, name, serialNumber, msg.sender, quantity, expiry);
+    }
+
+    /**
+     * @notice Выпустить упаковки партии: по одному токену на коробку,
+     *         у каждой свой QR-секрет (в контракт передаются только хэши).
+     *         Только производитель партии. Выпускать следует чанками:
+     *         одна коробка ≈ 80–100 тыс. газа, лимит блока ~30 млн.
+     * @param batchId   идентификатор партии
+     * @param codeHashes keccak256 секретов каждой выпускаемой коробки
+     * @return firstTokenId первый выпущенный tokenId диапазона
+     * @return lastTokenId последний выпущенный tokenId диапазона
+     */
+    function mintUnits(uint256 batchId, bytes32[] calldata codeHashes)
+        external
+        batchExists(batchId)
+        returns (uint256 firstTokenId, uint256 lastTokenId)
+    {
+        Batch storage batch = batches[batchId];
+        require(msg.sender == batch.manufacturer, "PharmaTrack: not batch manufacturer");
+        require(batch.recalledAt == 0, "PharmaTrack: batch recalled");
+        require(codeHashes.length > 0, "PharmaTrack: empty list");
+        require(codeHashes.length <= 250, "PharmaTrack: mint in smaller chunks");
+        require(batch.mintedCount + codeHashes.length <= batch.quantity,
+            "PharmaTrack: exceeds declared quantity");
+
+        firstTokenId = nextUnitId;
+        for (uint256 i = 0; i < codeHashes.length; i++) {
+            require(codeHashes[i] != bytes32(0), "PharmaTrack: zero code hash");
+            uint256 tokenId = nextUnitId++;
+            units[tokenId] = Unit({
+                batchId: batchId,
+                status: UnitStatus.Active,
+                codeHash: codeHashes[i],
+                mintedAt: uint64(block.timestamp),
+                soldAt: 0
+            });
+            _unitIds[batchId].push(tokenId);
+            emit Transfer(address(0), batch.custodian, tokenId); // ERC-721: минт
+        }
+        batch.mintedCount += codeHashes.length;
+        lastTokenId = nextUnitId - 1;
+
+        emit UnitsMinted(batchId, firstTokenId, lastTokenId, msg.sender);
+    }
 }
