@@ -255,4 +255,74 @@ contract PharmaTrack {
 
         emit UnitsMinted(batchId, firstTokenId, lastTokenId, msg.sender);
     }
+
+    // ---------- Движение по цепочке поставок ----------
+
+    /**
+     * @notice Передать всю партию следующему звену (партия едет целиком).
+     *         Блокируется после первой продажи упаковки партии.
+     * @param batchId идентификатор партии
+     * @param to      получатель: дистрибьютор или аптека
+     */
+    function transferCustody(uint256 batchId, address to) external batchExists(batchId) {
+        Batch storage batch = batches[batchId];
+        require(batch.custodian == msg.sender, "PharmaTrack: caller is not custodian");
+        require(batch.recalledAt == 0, "PharmaTrack: batch recalled");
+        require(batch.soldCount == 0, "PharmaTrack: batch has sold units");
+        require(to != msg.sender, "PharmaTrack: transfer to self");
+
+        Role toRole = participants[to];
+        require(
+            toRole == Role.Distributor || toRole == Role.Pharmacy,
+            "PharmaTrack: recipient must be Distributor or Pharmacy"
+        );
+
+        batch.custodian = to;
+        emit CustodyTransferred(batchId, msg.sender, to);
+    }
+
+    /**
+     * @notice Продать упаковку покупателю. Необратимо: фиксируется soldAt
+     *         (block.timestamp), после чего упаковка и партия больше не
+     *         передаются. Только аптека — текущий владелец партии.
+     * @param tokenId идентификатор упаковки (коробки)
+     */
+    function markSold(uint256 tokenId) external unitExists(tokenId) {
+        Unit storage unit = units[tokenId];
+        Batch storage batch = batches[unit.batchId];
+        require(participants[msg.sender] == Role.Pharmacy, "PharmaTrack: caller is not a pharmacy");
+        require(batch.custodian == msg.sender, "PharmaTrack: caller is not custodian");
+        require(batch.recalledAt == 0, "PharmaTrack: batch recalled");
+        require(batch.expiry > block.timestamp, "PharmaTrack: batch expired");
+        require(unit.status == UnitStatus.Active, "PharmaTrack: unit already sold");
+
+        unit.status = UnitStatus.Sold;
+        unit.soldAt = uint64(block.timestamp);
+        batch.soldCount += 1;
+
+        emit UnitSold(tokenId, msg.sender, unit.soldAt);
+    }
+
+    /**
+     * @notice Отозвать партию (брак, фальсификация). Разрешён в любой
+     *         момент, в том числе после продажи части упаковок:
+     *         покупатели отозванных коробок должны видеть предупреждение.
+     *         Вызывает администратор или производитель партии.
+     */
+    function recallBatch(uint256 batchId, string calldata reason)
+        external
+        batchExists(batchId)
+    {
+        Batch storage batch = batches[batchId];
+        require(
+            participants[msg.sender] == Role.Admin || msg.sender == batch.manufacturer,
+            "PharmaTrack: caller cannot recall"
+        );
+        require(batch.recalledAt == 0, "PharmaTrack: already recalled");
+
+        batch.recalledAt = uint64(block.timestamp);
+        batch.recallReason = reason;
+
+        emit BatchRecalled(batchId, reason, batch.recalledAt);
+    }
 }
