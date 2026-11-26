@@ -141,9 +141,15 @@ function switchTab(name) {
 /* ---------------- проверка покупателем ---------------- */
 
 async function verify() {
-  const tokenId = Number($('v-token').value);
-  const secret = $('v-secret').value.trim();
-  const verdict = $('verdict');
+  await runVerification('verdict', 'verify-details', 'verify-history', 'verify-history-list',
+    $('v-token').value, $('v-secret').value);
+}
+
+/// Общая проверка: рендерит вердикт в переданные элементы (служебная вкладка или режим покупателя).
+async function runVerification(verdictId, detailsId, historyWrapId, historyListId, tokenInput, secretInput) {
+  const tokenId = Number(tokenInput);
+  const secret = String(secretInput).trim();
+  const verdict = $(verdictId);
   verdict.classList.remove('hidden', 'good', 'bad', 'warn');
   if (!tokenId || !secret) {
     verdict.classList.add('warn');
@@ -180,7 +186,7 @@ async function verify() {
     verdict.classList.add(cls);
     verdict.innerHTML = `<div class="v-title">${title}</div><div class="v-sub">${sub}</div>`;
 
-    const d = $('verify-details');
+    const d = $(detailsId);
     d.classList.remove('hidden');
     d.innerHTML = `
       <h3>Коробка №${tokenId} — «${batch.name}» (партия #${v.batchId})</h3>
@@ -193,15 +199,17 @@ async function verify() {
         ${batch.instructionsUrl ? `<dt>Инструкция</dt><dd><a href="${batch.instructionsUrl}" target="_blank" rel="noopener">${batch.instructionsUrl}</a></dd>` : ''}
       </dl>`;
 
-    await showHistory(v.batchId, tokenId, 'verify-history', 'verify-history-list');
+    await showHistory(v.batchId, tokenId, historyWrapId, historyListId);
   } catch (e) {
     verdict.classList.add('bad');
     verdict.innerHTML = `<div class="v-title">✗ ОШИБКА</div><div class="v-sub">Упаковка не найдена в реестре (или неверный номер)</div>`;
-    $('verify-details').classList.add('hidden');
-    $('verify-history').classList.add('hidden');
+    $(detailsId).classList.add('hidden');
+    $(historyWrapId).classList.add('hidden');
     console.error(e);
   }
 }
+
+/* ---------------- ссылка QR → отдельная страница покупателя ---------------- */
 
 /* ---------------- производитель ---------------- */
 
@@ -243,9 +251,13 @@ async function registerBatch() {
     const grid = $('qr-grid');
     grid.innerHTML = '';
     const lines = [`Партия #${batchId} «${name}» — секреты коробок`, ''];
+    const contractQ = state.contract.options.address;
+    const rpcQ = encodeURIComponent($('rpc-url').value.trim());
     secrets.forEach((secret, i) => {
       const tokenId = Number(firstTokenId) + i;
-      const url = `${location.origin}${location.pathname}?u=${tokenId}&s=${encodeURIComponent(secret)}`;
+      // QR самодостаточен: ведёт на отдельную страницу покупателя verify.html,
+      // в ссылке — номер коробки, секрет, адрес контракта и RPC.
+      const url = `${location.origin}${location.pathname.replace(/[^/]*$/, '')}verify.html?u=${tokenId}&s=${encodeURIComponent(secret)}&c=${contractQ}&r=${rpcQ}`;
       lines.push(`Коробка tokenId ${tokenId}: ${secret}  (${url})`);
 
       const cell = document.createElement('div');
@@ -500,4 +512,10 @@ window.addEventListener('DOMContentLoaded', () => {
   $('btn-remove-participant').onclick = () => addParticipant(true);
   $('acct-select').onchange = (e) => switchAccount(e.target.value);
   document.querySelectorAll('.tabs button').forEach((b) => b.onclick = () => switchTab(b.dataset.tab));
+
+  // Открыто по QR-ссылке (?u=…&s=…): отправляем на страницу покупателя.
+  const qp = new URLSearchParams(location.search);
+  if (qp.get('u') && qp.get('s')) {
+    location.replace('verify.html' + location.search);
+  }
 });

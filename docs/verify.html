@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PharmaTrack — проверка упаковки</title>
+  <link rel="stylesheet" href="style.css?v=3" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="pill">⛓ Ethereum</span>
+      <h1>PharmaTrack</h1>
+      <p>Проверка подлинности лекарственной упаковки</p>
+    </div>
+  </header>
+
+  <!-- Проверка: без входа, без кошелька -->
+  <section class="card narrow">
+    <h2>Проверка по QR-коду</h2>
+    <p class="hint">Данные читаются напрямую из блокчейна Ethereum.
+       Кошелёк, ETH и установка приложений не нужны.</p>
+    <div class="grid two">
+      <label>Номер упаковки (tokenId)
+        <input id="v-token" type="number" min="1" placeholder="1" />
+      </label>
+      <label>Код из QR (секрет)
+        <input id="v-secret" class="mono" placeholder="PHARMA-…" />
+      </label>
+    </div>
+    <div class="btn-row">
+      <button id="btn-verify" class="primary">Проверить</button>
+    </div>
+    <p class="hint" id="page-status"></p>
+  </section>
+
+  <div id="result-wrap" class="narrow-wrap">
+    <div id="verdict" class="card verdict hidden"></div>
+    <div id="details" class="card hidden"></div>
+    <div id="history" class="card hidden">
+      <h3>История партии (журнал аудита)</h3>
+      <div id="history-list"></div>
+    </div>
+  </div>
+
+  <footer>
+    <p>Учебный проект по курсу «Блокчейн» · Ethereum · Solidity · web3.js</p>
+  </footer>
+
+  <script src="vendor/web3.min.js"></script>
+  <script src="config.js"></script>
+  <script src="verify.js?v=3"></script>
+</body>
+</html>

@@ -87,9 +87,10 @@ npm run seed -- --rpc http://localhost:8545    # терминал 3: участ�
 - geth: `geth --dev --http --http.api eth,web3,net --http.port 8545 console`,
   затем `npm run deploy -- --rpc http://localhost:8545`.
 - Remix: файл без импортов; для ganache ставьте EVM version = paris.
-- Sepolia: `npm run deploy -- --rpc <sepolia-rpc> --key <ключ>`, впишите адрес
-  в `docs/config.js` — QR-коды будут вести на GitHub Pages, верификация с
-  телефона пройдёт через публичный RPC без кошелька.
+- Sepolia: `npm run deploy -- --rpc <sepolia-rpc> --key <ключ>` — адрес контракта
+  QR-код несёт в себе (`&c=…`), вписывать в config не обязательно; QR ведёт на
+  отдельную страницу покупателя `verify.html` — без входа, кошелька и вкладок,
+  верификация с телефона через публичный RPC.
 
 ## API смарт-контракта
 
@@ -149,5 +150,3 @@ npm run seed -- --rpc http://localhost:8545    # терминал 3: участ�
 | Д.М. Кораблева | Скрипты web3.js (deploy/seed/demo), интеграционные тесты |
 | А.К. Иванчик | Веб-интерфейс (QR на коробку, верификация, реестр), документация и отчёт |
 
-## Университет
-Проект выполнен в рамках дисциплины "BLOCKCHAIN: TOOLS AND TECHNOLOGIES". Направление: 01.04.02. ФКТиПМ. КубГУ.  
